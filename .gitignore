@@ -49,3 +49,7 @@ logs/
 
 # Databricks
 .databricks/
+
+# Monitoring runtime state (contains timestamps and alerted IDs — machine-local)
+monitoring_state.json
+monitoring_state.tmp

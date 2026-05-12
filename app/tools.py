@@ -125,6 +125,110 @@ def get_top_dbu_consumers(days_back: int = 30) -> str:
     return json.dumps(rows, default=str)
 
 
+# ── Scheduler tools (timestamp-based, return list[dict] directly) ─────────────
+# These are used by the background alerting checks, not by the interactive agent.
+# They filter on period_end_time >= since_iso so that runs which started before
+# the window but just finished are never missed.
+
+_pipeline_table_available: bool | None = None  # None = not yet probed
+_cluster_table_available: bool | None = None
+
+
+def get_job_failures_since(since_iso: str) -> list[dict]:
+    query = f"""
+    SELECT
+        r.job_id,
+        r.run_id,
+        j.name                                                        AS job_name,
+        r.result_state,
+        r.period_start_time                                           AS start_time,
+        r.period_end_time                                             AS end_time,
+        DATEDIFF(minute, r.period_start_time, r.period_end_time)     AS duration_minutes
+    FROM system.lakeflow.job_run_timeline r
+    LEFT JOIN system.lakeflow.jobs j
+        ON r.job_id = j.job_id AND r.workspace_id = j.workspace_id
+    WHERE r.result_state IN ('FAILED', 'TIMEDOUT', 'INTERNAL_ERROR')
+      AND r.period_end_time >= '{since_iso}'
+    ORDER BY r.period_end_time DESC
+    LIMIT 100
+    """
+    return run_query(query)
+
+
+def get_pipeline_failures_since(since_iso: str) -> list[dict]:
+    global _pipeline_table_available
+    if _pipeline_table_available is False:
+        return []
+    query = f"""
+    SELECT
+        p.pipeline_id,
+        p.update_id,
+        p.pipeline_name,
+        p.state                                                       AS result_state,
+        p.start_time,
+        p.end_time,
+        DATEDIFF(minute, p.start_time, p.end_time)                   AS duration_minutes,
+        p.cause                                                       AS error_cause
+    FROM system.lakeflow.pipeline_run_timeline p
+    WHERE p.state IN ('FAILED', 'INTERNAL_ERROR')
+      AND p.end_time >= '{since_iso}'
+    ORDER BY p.end_time DESC
+    LIMIT 100
+    """
+    try:
+        rows = run_query(query)
+        _pipeline_table_available = True
+        return rows
+    except Exception as exc:
+        err = str(exc)
+        if any(k in err for k in ("TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND", "NoSuchTableException")):
+            _pipeline_table_available = False
+            import logging
+            logging.getLogger(__name__).warning(
+                "system.lakeflow.pipeline_run_timeline not found — DLT pipeline checks disabled"
+            )
+            return []
+        raise
+
+
+def get_cluster_failures_since(since_iso: str) -> list[dict]:
+    global _cluster_table_available
+    if _cluster_table_available is False:
+        return []
+    query = f"""
+    SELECT
+        c.cluster_id,
+        c.cluster_name,
+        c.state,
+        c.terminated_time,
+        c.termination_reason.type                                     AS termination_type,
+        c.termination_reason.code                                     AS termination_code
+    FROM system.compute.clusters c
+    WHERE c.state = 'TERMINATED'
+      AND c.termination_reason.type IN (
+          'SPARK_STARTUP_FAILURE', 'UNEXPECTED_LAUNCH_FAILURE',
+          'DRIVER_OOM', 'SPARK_CRASH', 'CLUSTER_UNREACHABLE'
+      )
+      AND c.terminated_time >= '{since_iso}'
+    ORDER BY c.terminated_time DESC
+    LIMIT 50
+    """
+    try:
+        rows = run_query(query)
+        _cluster_table_available = True
+        return rows
+    except Exception as exc:
+        err = str(exc)
+        if any(k in err for k in ("TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND", "AnalysisException")):
+            _cluster_table_available = False
+            import logging
+            logging.getLogger(__name__).warning(
+                "system.compute.clusters struct query failed — cluster checks disabled"
+            )
+            return []
+        raise
+
+
 def _to_openai_schema(tool: dict) -> dict:
     return {
         "type": "function",

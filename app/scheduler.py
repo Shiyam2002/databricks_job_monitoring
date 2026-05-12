@@ -1,10 +1,12 @@
 """
 Background scheduler — runs proactive monitoring checks on a fixed cadence.
 
-Jobs:
-  check_failures     — every POLL_INTERVAL_MINUTES (default 15)
-  check_long_running — every POLL_INTERVAL_MINUTES (default 15)
-  daily_digest       — daily at DIGEST_HOUR:00 (default 09:00)
+Jobs and default intervals:
+  check_failures          — every POLL_INTERVAL_MINUTES       (default 1 min)
+  check_pipeline_failures — every POLL_INTERVAL_MINUTES       (default 1 min)
+  check_cluster_failures  — every POLL_INTERVAL_MINUTES       (default 1 min)
+  check_long_running      — every LONG_RUNNING_INTERVAL_MINUTES (default 10 min)
+  daily_digest            — daily at DIGEST_HOUR:00 UTC        (default 09:00)
 """
 import logging
 import os
@@ -21,29 +23,46 @@ _scheduler: AsyncIOScheduler | None = None
 def start_scheduler() -> None:
     global _scheduler
 
-    from .alerting import check_failures, check_long_running, daily_digest
+    from .alerting import (
+        check_cluster_failures,
+        check_failures,
+        check_long_running,
+        check_pipeline_failures,
+        daily_digest,
+    )
 
-    poll_minutes = int(os.environ.get("POLL_INTERVAL_MINUTES", "15"))
+    poll_minutes = int(os.environ.get("POLL_INTERVAL_MINUTES", "1"))
+    long_running_minutes = int(os.environ.get("LONG_RUNNING_INTERVAL_MINUTES", "10"))
     digest_hour = int(os.environ.get("DIGEST_HOUR", "9"))
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
 
-    _scheduler.add_job(
-        check_failures,
-        IntervalTrigger(minutes=poll_minutes),
-        id="check_failures",
-        name="Job failure check",
-        max_instances=1,
-        misfire_grace_time=60,
-    )
+    # Fast failure checks — run every POLL_INTERVAL_MINUTES
+    for func, job_id, label in [
+        (check_failures,          "check_failures",          "Job failure check"),
+        (check_pipeline_failures, "check_pipeline_failures", "DLT pipeline failure check"),
+        (check_cluster_failures,  "check_cluster_failures",  "Cluster failure check"),
+    ]:
+        _scheduler.add_job(
+            func,
+            IntervalTrigger(minutes=poll_minutes),
+            id=job_id,
+            name=label,
+            max_instances=1,
+            misfire_grace_time=30,
+        )
+
+    # Long-running job check — less frequent
     _scheduler.add_job(
         check_long_running,
-        IntervalTrigger(minutes=poll_minutes),
+        IntervalTrigger(minutes=long_running_minutes),
         id="check_long_running",
         name="Long-running job check",
         max_instances=1,
         misfire_grace_time=60,
     )
+
+    # Daily digest
     _scheduler.add_job(
         daily_digest,
         CronTrigger(hour=digest_hour, minute=0),
@@ -54,8 +73,10 @@ def start_scheduler() -> None:
 
     _scheduler.start()
     logger.info(
-        "Scheduler started — polling every %d min, daily digest at %02d:00 UTC",
+        "Scheduler started — failure polling every %d min, "
+        "long-running every %d min, daily digest at %02d:00 UTC",
         poll_minutes,
+        long_running_minutes,
         digest_hour,
     )
 

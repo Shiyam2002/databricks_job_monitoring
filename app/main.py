@@ -63,7 +63,15 @@ async def lifespan(app: FastAPI):
                 stacklevel=2,
             )
 
+    # Start background scheduler if a Teams webhook is configured
+    if os.environ.get("TEAMS_WEBHOOK_URL"):
+        from .scheduler import start_scheduler
+        start_scheduler()
+
     yield
+
+    from .scheduler import stop_scheduler
+    stop_scheduler()
 
 
 app = FastAPI(

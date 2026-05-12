@@ -53,7 +53,15 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"Missing required environment variables: {missing}")
 
     if os.environ.get("MicrosoftAppId"):
-        _teams_adapter, _teams_bot, _Activity = _build_bot_adapter()
+        try:
+            _teams_adapter, _teams_bot, _Activity = _build_bot_adapter()
+        except ModuleNotFoundError:
+            import warnings
+            warnings.warn(
+                "botbuilder packages not installed — Teams integration disabled. "
+                "Run: pip install botbuilder-core botbuilder-integration-aiohttp",
+                stacklevel=2,
+            )
 
     yield
 

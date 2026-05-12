@@ -4,10 +4,14 @@ from databricks import sql
 
 def get_connection():
     host = os.environ["DATABRICKS_HOST"].replace("https://", "").replace("http://", "")
+    # DATABRICKS_TOKEN is auto-injected by Databricks Apps; on local dev it must
+    # be set manually in .env.  The SQL connector accepts None and will fall back
+    # to the default credential chain (useful on Databricks Apps with OAuth).
+    token = os.environ.get("DATABRICKS_TOKEN")
     return sql.connect(
         server_hostname=host,
         http_path=os.environ["DATABRICKS_HTTP_PATH"],
-        access_token=os.environ["DATABRICKS_TOKEN"],
+        access_token=token,
     )
 
 

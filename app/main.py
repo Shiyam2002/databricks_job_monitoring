@@ -42,13 +42,20 @@ _Activity = None
 async def lifespan(app: FastAPI):
     global _teams_adapter, _teams_bot, _Activity
 
-    required = [
-        "DATABRICKS_HOST",
-        "DATABRICKS_TOKEN",
-        "DATABRICKS_HTTP_PATH",
-        "ANTHROPIC_API_KEY",
-    ]
-    missing = [k for k in required if not os.environ.get(k)]
+    # Databricks connection — DATABRICKS_HOST and DATABRICKS_TOKEN are auto-injected
+    # by Databricks Apps; DATABRICKS_HTTP_PATH must be set in the app config.
+    required_always = ["DATABRICKS_HOST", "DATABRICKS_HTTP_PATH"]
+
+    # AI provider credentials — only check the one that's actually being used
+    provider = os.environ.get("AGENT_PROVIDER", "anthropic").lower()
+    provider_keys = {
+        "anthropic":    ["ANTHROPIC_API_KEY"],
+        "openai":       ["OPENAI_API_KEY"],
+        "azure_openai": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"],
+    }
+    required_for_provider = provider_keys.get(provider, [])
+
+    missing = [k for k in required_always + required_for_provider if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Missing required environment variables: {missing}")
 
